@@ -1,0 +1,90 @@
+---
+argument_specs:
+  main:
+    short_description: Main set of tasks of the role zos_smpe_clone.
+    author: Luiggi Torricelli
+    options:
+      force_deletion:
+        description: "A boolean that determines if it will force delete the new zone and the new data sets before trying to create them."
+        type: "bool"
+        required: false
+        default: false
+
+      show_output:
+        description: "A boolean to determine if output should be displayed or not at the end."
+        type: "bool"
+        required: false
+        default: true
+
+      smpe_datasets:
+        description: "A list of strings containing the data set names belonging to the old SMP/E zone."
+        type: "list"
+        elements: "str"
+        required: true
+
+      smpe_global_csi:
+        description: "A string specifying the data set name of the SMP/E GLOBAL CSI."
+        type: "str"
+        required: true
+
+      smpe_new_zone:
+        description: "A dictionary specifying the details of the new SMP/E zone."
+        type: "dict"
+        required: true
+        options:
+          csi:
+            description: "A string specifying the data set name of the new zone's SMP/E CSI."
+            type: "str"
+            required: true
+          name:
+            description: "A string specifying the name of the new zone."
+            type: "str"
+            required: true
+          prefix:
+            description: "A string specifying the prefix of data sets of the new zone."
+            type: "str"
+            required: true
+
+      smpe_old_zone:
+        description: "A dictionary specifying the details of the old SMP/E zone."
+        type: "dict"
+        required: true
+        options:
+          csi:
+            description: "A string specifying the data set name of the old zone's SMP/E CSI."
+            type: "str"
+            required: true
+          name:
+            description: "A string specifying the name of the old zone."
+            type: "str"
+            required: true
+          prefix:
+            description: "A string specifying the prefix of data sets of the old zone."
+            type: "str"
+            required: true
+
+      smpe_rename_dddefs:
+        description: "A list of dictionaries specifying the old and new data set prefixes to be renamed on the new zone's DDDEF entries."
+        type: "list"
+        elements: "dict"
+        required: false
+        default: []
+        options:
+          new:
+            description: "A string specifying the new prefix to renamed the data sets to."
+            type: "str"
+            required: true
+          old:
+            description: "A string specifying the old prefix to rename from the data sets."
+            type: "str"
+            required: true
+
+      smpe_zone_type:
+        description: "A string containing the SMP/E zone type of the new zone."
+        type: "str"
+        required: true
+        choices:
+          - "dlib"
+          - "target"
+          - "DLIB"
+          - "TARGET"

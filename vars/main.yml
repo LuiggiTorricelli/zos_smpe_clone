@@ -1,0 +1,11 @@
+# Regular expression to validate data set names
+regex_dataset: '^((?:[A-Z@#$][A-Z@#$0-9]{0,7}(?:\.(?!$)|$)){2,8})$'
+
+# Required new data sets for SMP/E processing
+zos_smpe_clone_required_new_datasets:
+  SMPLOG: "{{ smpe_new_zone.prefix | upper }}.{{ smpe_new_zone.name | upper }}.SMPLOG"
+  SMPLOGA: "{{ smpe_new_zone.prefix | upper }}.{{ smpe_new_zone.name | upper }}.SMPLOGA"
+  SMPLTS: "{{ smpe_new_zone.prefix | upper }}.{{ smpe_new_zone.name | upper }}.SMPLTS"
+  SMPMTS: "{{ smpe_new_zone.prefix | upper }}.{{ smpe_new_zone.name | upper }}.SMPMTS"
+  SMPSCDS: "{{ smpe_new_zone.prefix | upper }}.{{ smpe_new_zone.name | upper }}.SMPSCDS"
+  SMPSTS: "{{ smpe_new_zone.prefix | upper }}.{{ smpe_new_zone.name | upper }}.SMPSTS"

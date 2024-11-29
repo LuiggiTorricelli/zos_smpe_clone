@@ -1,0 +1,8 @@
+# A boolean that determines if it will force delete the new zone and the new data sets before trying to create them.
+force_deletion: false
+
+# Display output at the end or not
+show_output: true
+
+# A list of dictionaries specifying the old and new data set prefixes to be renamed on the new zone's DDDEF entries.
+smpe_rename_dddefs: []

@@ -1,0 +1,625 @@
+---
+- name: "Assert that input variables are informed correctly."
+  ansible.builtin.assert:
+    that:
+      - (smpe_datasets is not string) and (smpe_datasets is iterable) and (smpe_datasets is not mapping)
+      - (smpe_datasets | length > 0) and (smpe_datasets | map('length') | select('ge', 44) + smpe_datasets | map('length') | select('eq', 0)) | list | length == 0 and (None not in smpe_datasets | map('upper') | map('regex_search', '^((?:[A-Z@#$][A-Z@#$1-9]{0,7}(?:\.(?!$)|$)){2,8})$') | list)
+      - (smpe_global_csi is string) and (smpe_global_csi is iterable) and (smpe_global_csi is not mapping)
+      - (smpe_global_csi | length > 0 and smpe_global_csi | length <= 44) and (smpe_global_csi | upper is regex(regex_dataset))
+      - (smpe_new_zone.csi is string) and (smpe_new_zone.csi is iterable) and (smpe_new_zone.csi is not mapping)
+      - (smpe_new_zone.csi | length > 0 and smpe_new_zone.csi | length <= 38) and (smpe_new_zone.csi | upper is regex(regex_dataset))
+      - (smpe_new_zone.name is string) and (smpe_new_zone.name is iterable) and (smpe_new_zone.name is not mapping)
+      - (smpe_new_zone.name | length > 0 and smpe_new_zone.name | length <= 7) and (smpe_new_zone.name | replace(' ', '') == smpe_new_zone.name)
+      - (smpe_new_zone.prefix is string) and (smpe_new_zone.prefix is iterable) and (smpe_new_zone.prefix is not mapping)
+      - (smpe_new_zone.prefix | length > 0 and smpe_new_zone.prefix | length <= 44) and (smpe_new_zone.prefix | upper is regex(regex_dataset))
+      - (smpe_old_zone.csi is string) and (smpe_old_zone.csi is iterable) and (smpe_old_zone.csi is not mapping)
+      - (smpe_old_zone.csi | length > 0 and smpe_old_zone.csi | length <= 38) and (smpe_old_zone.csi | upper is regex(regex_dataset))
+      - (smpe_old_zone.name is string) and (smpe_old_zone.name is iterable) and (smpe_old_zone.name is not mapping)
+      - (smpe_old_zone.name | length > 0 and smpe_old_zone.name | length <= 7) and (smpe_old_zone.name | replace(' ', '') == smpe_old_zone.name)
+      - (smpe_old_zone.prefix is string) and (smpe_old_zone.prefix is iterable) and (smpe_old_zone.prefix is not mapping)
+      - (smpe_old_zone.prefix | length > 0 and smpe_old_zone.prefix | length <= 44) and (smpe_old_zone.prefix | upper is regex(regex_dataset))
+      - (smpe_rename_dddefs is not string) and (smpe_rename_dddefs is iterable) and (smpe_rename_dddefs is not mapping)
+      - (smpe_rename_dddefs | length > 0) and (__rename_dddef_prefixes | map('length') | select('ge', 44) + __rename_dddef_prefixes | map('length') | select('eq', 0)) | list | length == 0
+      - (smpe_zone_type is string) and (smpe_zone_type is iterable) and (smpe_zone_type is not mapping)
+      - (smpe_zone_type | length > 0) and (smpe_zone_type| length <= 6)
+    success_msg: "SUCCESS: The input variables were informed successfully!"
+    fail_msg: "ERROR: One or more input variables were wrongly informed. Make sure there are no extra spaces on the variables and the length is being respected."
+    quiet: true
+  vars:
+    __rename_dddef_prefixes: "{{ (smpe_rename_dddefs | map(attribute='new') + smpe_rename_dddefs | map(attribute='old')) | map('upper') | list }}"
+
+- name: "Make sure variables are empty before starting."
+  ansible.builtin.set_fact:
+    zos_smpe_clone_datasets: []
+
+- name: "Set fact containing the list of old and new data set names, considering the informed renames."
+  ansible.builtin.set_fact:
+    zos_smpe_clone_datasets: "{{ zos_smpe_clone_datasets + __datasets }}"
+  loop: "{{ smpe_rename_dddefs }}"
+  loop_control:
+    loop_var: "dddef"
+  vars:
+    __old_datasets: "{{ smpe_datasets | map('upper') | list | select('match', dddef.old | upper + '.*') | list }}"
+    __new_datasets: "{{ __old_datasets | map('replace', dddef.old | upper, dddef.new | upper) | list }}"
+    __json_query: '[*].{"old": @[0], "new": @[1]}'
+    __datasets: "{{ __old_datasets | zip(__new_datasets) | list | to_json | from_json | json_query(__json_query) | list }}"
+
+- name: "Fail if no data set names were identified on the list of old and new data sets."
+  ansible.builtin.fail:
+    msg: "ERROR: No data set names were identified on the list of old and new data sets."
+  when: zos_smpe_clone_datasets | length == 0
+
+- name: "Execute TSO command HRECALL on current and new data sets."
+  ibm.ibm_zos_core.zos_tso_command:
+    commands: "{{ (zos_smpe_clone_datasets | map(attribute='old') | list + zos_smpe_clone_datasets | map(attribute='new') | list + [smpe_new_zone.csi | upper, smpe_old_zone.csi | upper, smpe_global_csi | upper] + zos_smpe_clone_required_new_datasets.values() | list) | map('regex_replace', '(.+)', \"HRECALL '\\1' WAIT\") | list }}"
+    max_rc: 14 # Do not fail even if data set is not in catalog
+  register: zos_smpe_clone_hrecall
+
+- name: "Find if any current and new supposed data set exists."
+  ibm.ibm_zos_core.zos_find:
+    patterns: "{{ (zos_smpe_clone_datasets | map(attribute='old') | list + zos_smpe_clone_datasets | map(attribute='new') | list + [smpe_new_zone.csi | upper, smpe_old_zone.csi | upper, smpe_global_csi | upper] + zos_smpe_clone_required_new_datasets.values() | list) | list }}"
+  register: zos_smpe_clone_find
+
+- name: "When force deletion is true, include tasks to clean up prior to the process."
+  when: force_deletion
+  block:
+    - name: "When force deletion is true, delete the new zone from the current SMP/E global CSI data set using GIMSMP."
+      ibm.ibm_zos_core.zos_mvs_raw:
+        program_name: "gimsmp"
+        auth: true
+        verbose: true
+        dds:
+          - dd_data_set:
+              dd_name: "smpcsi"
+              data_set_name: "{{ smpe_global_csi | upper }}"
+          - dd_output:
+              dd_name: "smpout"
+              return_content:
+                type: text
+          - dd_output:
+              dd_name: "smprpt"
+              return_content:
+                type: text
+          - dd_vio:
+              dd_name: "smplog"
+          - dd_vio:
+              dd_name: "smploga"
+          - dd_vio:
+              dd_name: "sysut1"
+          - dd_vio:
+              dd_name: "sysut2"
+          - dd_vio:
+              dd_name: "sysut3"
+          - dd_vio:
+              dd_name: "sysut4"
+          - dd_vio:
+              dd_name: "smpwrk1"
+          - dd_vio:
+              dd_name: "smpwrk2"
+          - dd_vio:
+              dd_name: "smpwrk3"
+          - dd_vio:
+              dd_name: "smpwrk4"
+          - dd_vio:
+              dd_name: "smpwrk5"
+          - dd_vio:
+              dd_name: "smpwrk6"
+          - dd_vio:
+              dd_name: "smpwrk7"
+          - dd_vio:
+              dd_name: "smpwrk8"
+          - dd_vio:
+              dd_name: "smpwrk9"
+          - dd_input:
+              dd_name: smpcntl
+              content: |
+                SET BOUNDARY({{ smpe_new_zone.name | upper }}).
+                ZONEDELETE {{ smpe_zone_type | upper }}ZONE({{ smpe_new_zone.name | upper }}).
+      failed_when: zos_smpe_clone_gimsmp_zone_delete.ret_code.code > 0 and 'IT IS NOT DEFINED BY A ZONEINDEX' not in __output
+      register: zos_smpe_clone_gimsmp_zone_delete
+      vars:
+        __output: "{{ (zos_smpe_clone_gimsmp_zone_delete.dd_names | selectattr('dd_name', 'eq', 'smpout') | first).content | join('\n') }}"
+
+    - name: "When force deletion is true, delete all data sets matching the new prefix."
+      ibm.ibm_zos_core.zos_data_set:
+        batch: "{{ __data_sets }}"
+      register: zos_smpe_clone_delete_data_sets
+      vars:
+        __data_sets: |
+          {%- set datasets = [] -%}
+          {%- for dsn in zos_smpe_clone_datasets -%}
+            {{- datasets.append({'name': dsn.new, 'state': 'absent'}) -}}
+          {%- endfor -%}
+          {%- for dsn in zos_smpe_clone_required_new_datasets.values() | list -%}
+            {{- datasets.append({'name': dsn, 'state': 'absent'}) -}}
+          {%- endfor -%}
+          {{- datasets.append({'name': smpe_new_zone.csi | upper, 'state': 'absent'}) -}}
+          {{- datasets -}}
+
+- name: "Block to handle errors on the clone portion."
+  block:
+    - name: "Copy the old data sets to the new data sets using ADRDSSU COPY."
+      ibm.ibm_zos_core.zos_mvs_raw:
+        program_name: "adrdssu"
+        auth: true
+        verbose: true
+        dds:
+          - dd_output:
+              dd_name: "sysprint"
+              return_content:
+                type: "text"
+          - dd_input:
+              dd_name: "sysin"
+              content: |
+                COPY DATASET( -
+                      INCLUDE( -
+                {% for dsn in zos_smpe_clone_datasets %}
+                        {{ dsn.old }}, -
+                {% endfor %}
+                      ) -
+                    ) -
+                    ALLDATA(*) -
+                    ALLEXCP -
+                    CANCELERROR -
+                    CATALOG -
+                    RENAMEUNCONDITIONAL( -
+                {% for dsn in zos_smpe_clone_datasets %}
+                      ( -
+                        {{ dsn.old }}, -
+                        {{ dsn.new }}, -
+                      ), -
+                {% endfor %}
+                    ) -
+                    SHARE -
+                    SPHERE -
+                    TOLERATE(ENQF)
+      failed_when: zos_smpe_clone_adrdssu_copy.ret_code.code > 4 # Use this while max_rc not available for this module
+      register: zos_smpe_clone_adrdssu_copy
+
+    - name: "Define the SMP/E CSI data set for the new zone, based on the current zone."
+      ibm.ibm_zos_core.zos_mvs_raw:
+        program_name: "idcams"
+        auth: true
+        verbose: true
+        dds:
+          - dd_output:
+              dd_name: "sysprint"
+              return_content:
+                type: "text"
+          - dd_input:
+              dd_name: "sysin"
+              content: |
+                DEFINE CLUSTER( -
+                        NAME({{ smpe_new_zone.csi | upper }}) -
+                        MODEL({{ smpe_old_zone.csi | upper }}) -
+                      ) -
+                      DATA( -
+                        NAME({{ smpe_new_zone.csi | upper }}.DATA) -
+                      ) -
+                      INDEX( -
+                        NAME({{ smpe_new_zone.csi | upper }}.INDEX) -
+                      )
+      register: zos_smpe_clone_idcams_define_vsam
+
+    - name: "Initialize the new SMP/E CSI data set using IDCAMS REPRO of GIMZPOOL record."
+      ibm.ibm_zos_core.zos_mvs_raw:
+        program_name: "idcams"
+        auth: true
+        verbose: true
+        dds:
+          - dd_data_set:
+              dd_name: "smpcsi"
+              data_set_name: "{{ smpe_new_zone.csi | upper }}"
+              disposition: "old"
+          - dd_data_set:
+              dd_name: "zpool"
+              data_set_name: "SYS1.MACLIB(GIMZPOOL)"
+          - dd_output:
+              dd_name: "sysprint"
+              return_content:
+                type: "text"
+          - dd_input:
+              dd_name: "sysin"
+              content: |
+                REPRO OUTFILE(SMPCSI) -
+                      INFILE(ZPOOL)
+      register: zos_smpe_clone_idcams_repro_gimzpool
+
+    - name: "Allocate SMPLOG, SMPLOGA, SMPSCDS, SMPLTS, SMPMTS, SMPSTS for the new zone, if not already present."
+      ibm.ibm_zos_core.zos_data_set:
+        batch:
+          - name: "{{ zos_smpe_clone_required_new_datasets.SMPLOG }}"
+            state: "present"
+            type: "seq"
+            space_primary: 5
+            space_secondary: 5
+            space_type: "cyl"
+            record_format: "vb"
+            record_length: 260
+          - name: "{{ zos_smpe_clone_required_new_datasets.SMPLOGA }}"
+            state: "present"
+            type: "seq"
+            space_primary: 5
+            space_secondary: 5
+            space_type: "cyl"
+            record_format: "vb"
+            record_length: 260
+          - name: "{{ zos_smpe_clone_required_new_datasets.SMPLTS }}"
+            state: "present"
+            type: "pds"
+            space_primary: 5
+            space_secondary: 5
+            space_type: "cyl"
+            record_format: "u"
+            record_length: 0
+            block_size: 32760
+            directory_blocks: 150
+          - name: "{{ zos_smpe_clone_required_new_datasets.SMPMTS }}"
+            state: "present"
+            type: "pds"
+            space_primary: 5
+            space_secondary: 5
+            space_type: "cyl"
+            record_format: "fb"
+            record_length: 80
+            directory_blocks: 60
+          - name: "{{ zos_smpe_clone_required_new_datasets.SMPSCDS }}"
+            state: "present"
+            type: "pds"
+            space_primary: 5
+            space_secondary: 5
+            space_type: "cyl"
+            record_format: "fb"
+            record_length: 80
+            directory_blocks: 300
+          - name: "{{ zos_smpe_clone_required_new_datasets.SMPSTS }}"
+            state: "present"
+            type: "pds"
+            space_primary: 5
+            space_secondary: 5
+            space_type: "cyl"
+            record_format: "fb"
+            record_length: 80
+            directory_blocks: 150
+
+    - name: "Add new zone index to the current SMP/E global CSI data set using GIMSMP."
+      ibm.ibm_zos_core.zos_mvs_raw:
+        program_name: "gimsmp"
+        auth: true
+        verbose: true
+        dds:
+          - dd_data_set:
+              dd_name: "smpcsi"
+              data_set_name: "{{ smpe_global_csi | upper }}"
+          - dd_data_set:
+              dd_name: "smplog"
+              data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOG }}"
+              disposition: "mod"
+              disposition_normal: "keep"
+          - dd_data_set:
+              dd_name: "smploga"
+              data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOGA }}"
+              disposition: "mod"
+              disposition_normal: "keep"
+          - dd_output:
+              dd_name: "smpout"
+              return_content:
+                type: text
+          - dd_output:
+              dd_name: "smprpt"
+              return_content:
+                type: text
+          - dd_vio:
+              dd_name: "sysut1"
+          - dd_vio:
+              dd_name: "sysut2"
+          - dd_vio:
+              dd_name: "sysut3"
+          - dd_vio:
+              dd_name: "sysut4"
+          - dd_vio:
+              dd_name: "smpwrk1"
+          - dd_vio:
+              dd_name: "smpwrk2"
+          - dd_vio:
+              dd_name: "smpwrk3"
+          - dd_vio:
+              dd_name: "smpwrk4"
+          - dd_vio:
+              dd_name: "smpwrk5"
+          - dd_vio:
+              dd_name: "smpwrk6"
+          - dd_vio:
+              dd_name: "smpwrk7"
+          - dd_vio:
+              dd_name: "smpwrk8"
+          - dd_vio:
+              dd_name: "smpwrk9"
+          - dd_input:
+              dd_name: smpcntl
+              content: |
+                SET BOUNDARY(GLOBAL).
+                UCLIN.
+                  ADD GLOBALZONE
+                    ZONEINDEX(
+                      ({{ smpe_new_zone.name | upper }},{{ smpe_new_zone.csi | upper }},{{ smpe_zone_type | upper }})
+                    ).
+                ENDUCL.
+      register: zos_smpe_clone_gimsmp_add_zone_index
+
+    - name: "Copy current zone to the new zone using GIMSMP."
+      ibm.ibm_zos_core.zos_mvs_raw:
+        program_name: "gimsmp"
+        auth: true
+        verbose: true
+        dds:
+          - dd_data_set:
+              dd_name: "smpcsi"
+              data_set_name: "{{ smpe_global_csi | upper }}"
+          - dd_data_set:
+              dd_name: "smplog"
+              data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOG }}"
+              disposition: "mod"
+              disposition_normal: "keep"
+          - dd_data_set:
+              dd_name: "smploga"
+              data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOGA }}"
+              disposition: "mod"
+              disposition_normal: "keep"
+          - dd_output:
+              dd_name: "smpout"
+              return_content:
+                type: text
+          - dd_output:
+              dd_name: "smprpt"
+              return_content:
+                type: text
+          - dd_vio:
+              dd_name: "sysut1"
+          - dd_vio:
+              dd_name: "sysut2"
+          - dd_vio:
+              dd_name: "sysut3"
+          - dd_vio:
+              dd_name: "sysut4"
+          - dd_vio:
+              dd_name: "smpwrk1"
+          - dd_vio:
+              dd_name: "smpwrk2"
+          - dd_vio:
+              dd_name: "smpwrk3"
+          - dd_vio:
+              dd_name: "smpwrk4"
+          - dd_vio:
+              dd_name: "smpwrk5"
+          - dd_vio:
+              dd_name: "smpwrk6"
+          - dd_vio:
+              dd_name: "smpwrk7"
+          - dd_vio:
+              dd_name: "smpwrk8"
+          - dd_vio:
+              dd_name: "smpwrk9"
+          - dd_input:
+              dd_name: smpcntl
+              content: |
+                SET BOUNDARY({{ smpe_new_zone.name | upper }}) OPTIONS(BUILD).
+                ZONECOPY({{ smpe_old_zone.name | upper }}) INTO({{ smpe_new_zone.name | upper }}) OPTIONS(BUILD).
+      register: zos_smpe_clone_gimsmp_zone_copy
+
+    - name: "Edit the DDDEF entries inside the new zone based on requested renames, if any, using GIMSMP."
+      ibm.ibm_zos_core.zos_mvs_raw:
+        program_name: "gimsmp"
+        auth: true
+        verbose: true
+        dds:
+          - dd_data_set:
+              dd_name: "smpcsi"
+              data_set_name: "{{ smpe_global_csi | upper }}"
+          - dd_data_set:
+              dd_name: "smplog"
+              data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOG }}"
+              disposition: "mod"
+              disposition_normal: "keep"
+          - dd_data_set:
+              dd_name: "smploga"
+              data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOGA }}"
+              disposition: "mod"
+              disposition_normal: "keep"
+          - dd_output:
+              dd_name: "smpout"
+              return_content:
+                type: text
+          - dd_output:
+              dd_name: "smprpt"
+              return_content:
+                type: text
+          - dd_vio:
+              dd_name: "sysut1"
+          - dd_vio:
+              dd_name: "sysut2"
+          - dd_vio:
+              dd_name: "sysut3"
+          - dd_vio:
+              dd_name: "sysut4"
+          - dd_vio:
+              dd_name: "smpwrk1"
+          - dd_vio:
+              dd_name: "smpwrk2"
+          - dd_vio:
+              dd_name: "smpwrk3"
+          - dd_vio:
+              dd_name: "smpwrk4"
+          - dd_vio:
+              dd_name: "smpwrk5"
+          - dd_vio:
+              dd_name: "smpwrk6"
+          - dd_vio:
+              dd_name: "smpwrk7"
+          - dd_vio:
+              dd_name: "smpwrk8"
+          - dd_vio:
+              dd_name: "smpwrk9"
+          - dd_input:
+              dd_name: smpcntl
+              content: |
+                SET BOUNDARY({{ smpe_new_zone.name | upper }}).
+                ZONEEDIT DDDEF.
+                {% for prefix in smpe_rename_dddefs %}
+                  CHANGE DATASET(
+                    {{ prefix.old | upper }}.*,
+                    {{ prefix.new | upper }}.*
+                  ).
+                {% endfor %}
+                ENDZONEEDIT.
+      register: zos_smpe_clone_gimsmp_zone_edit
+      when: smpe_rename_dddefs | length > 0
+
+  rescue:
+    - name: "Fail again informing the task name and the output."
+      ansible.builtin.debug:
+        msg:
+          - "ERROR: The playbook failed on task: \"{{ ansible_failed_task.name }}\""
+          - "-----------------------------"
+          - "{{ ansible_failed_result }}"
+      failed_when: true
+
+- name: "List the GLOBAL zone using GIMSMP."
+  ibm.ibm_zos_core.zos_mvs_raw:
+    program_name: "gimsmp"
+    auth: true
+    verbose: true
+    dds:
+      - dd_data_set:
+          dd_name: "smpcsi"
+          data_set_name: "{{ smpe_global_csi | upper }}"
+      - dd_data_set:
+          dd_name: "smplog"
+          data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOG }}"
+          disposition: "mod"
+          disposition_normal: "keep"
+      - dd_data_set:
+          dd_name: "smploga"
+          data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOGA }}"
+          disposition: "mod"
+          disposition_normal: "keep"
+      - dd_output:
+          dd_name: "smpout"
+          return_content:
+            type: text
+      - dd_output:
+          dd_name: "smplist"
+          return_content:
+            type: text
+      - dd_output:
+          dd_name: "smprpt"
+          return_content:
+            type: text
+      - dd_vio:
+          dd_name: "sysut1"
+      - dd_vio:
+          dd_name: "sysut2"
+      - dd_vio:
+          dd_name: "sysut3"
+      - dd_vio:
+          dd_name: "sysut4"
+      - dd_vio:
+          dd_name: "smpwrk1"
+      - dd_vio:
+          dd_name: "smpwrk2"
+      - dd_vio:
+          dd_name: "smpwrk3"
+      - dd_vio:
+          dd_name: "smpwrk4"
+      - dd_vio:
+          dd_name: "smpwrk5"
+      - dd_vio:
+          dd_name: "smpwrk6"
+      - dd_vio:
+          dd_name: "smpwrk7"
+      - dd_vio:
+          dd_name: "smpwrk8"
+      - dd_vio:
+          dd_name: "smpwrk9"
+      - dd_input:
+          dd_name: smpcntl
+          content: |
+            SET BOUNDARY(GLOBAL).
+            LIST GLOBALZONE.
+  register: zos_smpe_clone_list_global
+
+- name: "List the new zone using GIMSMP."
+  ibm.ibm_zos_core.zos_mvs_raw:
+    program_name: "gimsmp"
+    auth: true
+    verbose: true
+    dds:
+      - dd_data_set:
+          dd_name: "smpcsi"
+          data_set_name: "{{ smpe_global_csi | upper }}"
+      - dd_data_set:
+          dd_name: "smplog"
+          data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOG }}"
+          disposition: "mod"
+          disposition_normal: "keep"
+      - dd_data_set:
+          dd_name: "smploga"
+          data_set_name: "{{ zos_smpe_clone_required_new_datasets.SMPLOGA }}"
+          disposition: "mod"
+          disposition_normal: "keep"
+      - dd_output:
+          dd_name: "smpout"
+          return_content:
+            type: text
+      - dd_output:
+          dd_name: "smplist"
+          return_content:
+            type: text
+      - dd_output:
+          dd_name: "smprpt"
+          return_content:
+            type: text
+      - dd_vio:
+          dd_name: "sysut1"
+      - dd_vio:
+          dd_name: "sysut2"
+      - dd_vio:
+          dd_name: "sysut3"
+      - dd_vio:
+          dd_name: "sysut4"
+      - dd_vio:
+          dd_name: "smpwrk1"
+      - dd_vio:
+          dd_name: "smpwrk2"
+      - dd_vio:
+          dd_name: "smpwrk3"
+      - dd_vio:
+          dd_name: "smpwrk4"
+      - dd_vio:
+          dd_name: "smpwrk5"
+      - dd_vio:
+          dd_name: "smpwrk6"
+      - dd_vio:
+          dd_name: "smpwrk7"
+      - dd_vio:
+          dd_name: "smpwrk8"
+      - dd_vio:
+          dd_name: "smpwrk9"
+      - dd_input:
+          dd_name: smpcntl
+          content: |
+            SET BOUNDARY({{ smpe_new_zone.name | upper }}).
+            LIST {{ smpe_zone_type | upper }}ZONE
+                  DDDEF.
+  register: zos_smpe_clone_list_new
+
+- name: "Set fact containing both LIST outputs together."
+  ansible.builtin.set_fact:
+    zos_smpe_clone_list_output:
+      - "{{ (zos_smpe_clone_list_global.dd_names | selectattr('dd_name', 'eq', 'smplist') | list | first).content }}"
+      - "{{ (zos_smpe_clone_list_new.dd_names | selectattr('dd_name', 'eq', 'smplist') | list | first).content }}"
+
+- name: "Display SMPLIST DD output of the SMP/E LIST commands, if set to show output."
+  ansible.builtin.debug:
+    var: zos_smpe_clone_list_output
+  when: show_output

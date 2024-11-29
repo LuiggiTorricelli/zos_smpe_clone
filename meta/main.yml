@@ -1,0 +1,15 @@
+galaxy_info:
+  role_name: "zos_smpe_clone"
+  author: "Luiggi Torricelli"
+  description: "This Ansible role will execute several steps in order to clone a specified z/OS SMP/E zone to a brand new SMP/E zone."
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - zos
+    - mainframe
+    - smpe
+    - clone
+    - software
+collections:
+  - ibm.ibm_zos_core
+dependencies: []
