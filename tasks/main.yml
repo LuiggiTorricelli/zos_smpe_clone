@@ -173,8 +173,10 @@
                     SHARE -
                     SPHERE -
                     TOLERATE(ENQF)
-      failed_when: zos_smpe_clone_adrdssu_copy.ret_code.code > 4 # Use this while max_rc not available for this module
+      failed_when: zos_smpe_clone_adrdssu_copy.ret_code.code > 4 and (__attached_exit_code | length > 0 and __attached_exit_code | int > 4) # Use this while max_rc not available for this module
       register: zos_smpe_clone_adrdssu_copy
+      vars:
+        __attached_exit_code: "{{ (zos_smpe_clone_adrdssu_copy.msg | default('') | regex_findall('BGYSC0327I +Attach +Exit +code: +(\\S+)') | list)[0] | default('') }}"
 
     - name: "Define the SMP/E CSI data set for the new zone, based on the current zone."
       ibm.ibm_zos_core.zos_mvs_raw:
