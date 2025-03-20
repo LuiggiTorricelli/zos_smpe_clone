@@ -3,7 +3,7 @@
   ansible.builtin.assert:
     that:
       - (smpe_datasets is not string) and (smpe_datasets is iterable) and (smpe_datasets is not mapping)
-      - (smpe_datasets | length > 0) and (smpe_datasets | map('length') | select('ge', 44) + smpe_datasets | map('length') | select('eq', 0)) | list | length == 0 and (None not in smpe_datasets | map('upper') | map('regex_search', '^((?:[A-Z@#$][A-Z@#$1-9]{0,7}(?:\.(?!$)|$)){2,8})$') | list)
+      - (smpe_datasets | length > 0) and (smpe_datasets | map('length') | select('ge', 44) + smpe_datasets | map('length') | select('eq', 0)) | list | length == 0 and (None not in smpe_datasets | map('upper') | map('regex_search', '^((?:[A-Z@#$][A-Z@#$0-9]{0,7}(?:\.(?!$)|$)){2,8})$') | list)
       - (smpe_global_csi is string) and (smpe_global_csi is iterable) and (smpe_global_csi is not mapping)
       - (smpe_global_csi | length > 0 and smpe_global_csi | length <= 44) and (smpe_global_csi | upper is regex(regex_dataset))
       - (smpe_new_zone.csi is string) and (smpe_new_zone.csi is iterable) and (smpe_new_zone.csi is not mapping)
